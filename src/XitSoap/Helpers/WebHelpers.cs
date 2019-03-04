@@ -1,38 +1,69 @@
-﻿using System.IO;
+﻿using System;
+using System.Collections;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Web;
 using System.Xml;
 using System.Xml.Linq;
-using System.Xml.XPath;
 
 namespace HodStudio.XitSoap.Helpers
 {
+    public static class XmlExtensions
+    {
+        /// <summary>
+        /// Returns the specified <see cref="XElement"/>
+        /// without namespace qualifiers on elements and attributes.
+        /// </summary>
+        /// <param name="element">The element</param>
+        public static void StripNamespace(this XDocument document)
+        {
+            if (document.Root == null) return;
+
+            foreach (var element in document.Root.DescendantsAndSelf())
+            {
+                element.Name = element.Name.LocalName;
+                element.ReplaceAttributes(GetAttributesWithoutNamespace(element));
+            }
+        }
+        static IEnumerable GetAttributesWithoutNamespace(XElement xElement)
+        {
+            return xElement.Attributes()
+                .Where(x => !x.IsNamespaceDeclaration)
+                .Select(x => new XAttribute(x.Name.LocalName, x.Value));
+        }
+    }
     internal static class WebHelpers
     {
         internal static void ExtractResult(this WebService service, string methodName)
         {
-            // Selects just the elements with namespace http://tempuri.org/ (i.e. ignores SOAP namespace)
-            XmlNamespaceManager namespMan = new XmlNamespaceManager(new NameTable());
-            namespMan.AddNamespace(StringConstants.XmlResultDummyNamespace, service.Namespace);
-            var methodNameResult = string.Format(StringConstants.XmlResultResultFormat, methodName);
-
-            XElement webMethodResult = service.Result.SoapResponse.XPathSelectElement(string.Format(StringConstants.XmlResultXPathSelectorFormat, methodNameResult), namespMan);
-            // If the result is an XML, return it and convert it to string
-            if (webMethodResult.FirstNode.NodeType == XmlNodeType.Element)
+            foreach (XElement element in service.Result.SoapResponse.Descendants(methodName + "Response"))
             {
-                var xmlResult = XDocument.Parse(webMethodResult.ToString());
-                service.Result.XmlResult = XmlHelpers.RemoveNamespaces(xmlResult);
-                service.Result.StringResult = service.Result.XmlResult.ToString();
-            }
-            // If the result is a string, return it and convert it to XML (creating a root node to wrap the result)
-            else
-            {
-                service.Result.StringResult = webMethodResult.FirstNode.ToString();
-                service.Result.XmlResult = XDocument.Parse(string.Format(StringConstants.XmlResultXDocumentFormat, service.Result.StringResult));
+                if (element.NodeType == XmlNodeType.Element)
+                {
+                    XDocument doc = new XDocument();
+                    var rootElement = new XElement("root");
+                    var i = 0;
+                    foreach (var inner in element.Descendants())
+                    {
+                        if (i != 0)
+                        {
+                            rootElement.Add(inner);
+                        }
+                        i++;
+                    }
+                    doc.Add(rootElement);
+                    service.Result.XmlResult = doc;
+                    service.Result.StringResult = doc.ToString();
+                }
+                else
+                {
+                    service.Result.StringResult = element.FirstNode.ToString();
+                    service.Result.XmlResult = XDocument.Parse(string.Format(StringConstants.XmlResultXDocumentFormat, service.Result.StringResult));
+                }
             }
         }
-
         /// <summary>
         /// Invokes a Web Method, with its parameters encoded or not.
         /// </summary>
@@ -78,6 +109,7 @@ namespace HodStudio.XitSoap.Helpers
             var responseReader = new StreamReader(req.GetResponse().GetResponseStream());
             string result = responseReader.ReadToEnd();
             service.Result.SoapResponse = XDocument.Parse(result);
+            service.Result.SoapResponse.StripNamespace();
             service.ExtractResult(methodName);
             responseReader.Close();
         }
